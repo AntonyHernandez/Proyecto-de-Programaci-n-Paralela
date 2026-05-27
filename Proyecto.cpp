@@ -4,6 +4,8 @@
 #include <fstream>
 #include <chrono>
 #include <omp.h> // REQUERIDO: Cabecera para las funciones de OpenMP
+#include <vector>
+#include <mutex>
 
 // Configuración de Ultra-Alta Resolución (8K UHD: 7680 x 4320)
 const int WIDTH = 7680;
@@ -30,13 +32,18 @@ void generarMandelbrot(std::vector<Pixel>& imagen) {
     const std::string OUTPUT_FILE = "mandelbrot_8k_blurred.ppm";
 
     int cores = omp_get_num_procs();
-    int limite = cores * 2;
-    const char* eval[] = {"static","dynamic","guided"};
+    int limite = 2;
+    const char* eval[] = {"static"};
+    //int limite = cores * 2;
+    //const char* eval[] = {"static","dynamic","guided"};
     omp_sched_t schedulers[] = {omp_sched_static, omp_sched_dynamic, omp_sched_guided};
+
+    std::vector<int> historial(MAX_ITER + 1, 0);
+    std::mutex mutex;
 
     double start = omp_get_wtime();
 
-    for (int s = 0; s < 3; s++) {
+    for (int s = 0; s < 1; s++) {
 
         for (int chunks = 1; chunks <= limite; chunks=chunks*2) {
 
@@ -150,9 +157,78 @@ void guardarImagenPPM(const std::vector<Pixel>& imagen, const std::string& nombr
     archivo.close();
 }
 
+
+
+//Funciòn histograma, guarda la colores presentados en la imagen final
+void histograma(const std::vector<Pixel>& imagen) {
+    long long H_Red[256] = {0};
+    long long H_Green[256] = {0};
+    long long H_Blue[256] = {0};
+
+    int pixeles = WIDTH * HEIGHT;
+
+    double start = omp_get_wtime();
+    #pragma omp parallel
+    {
+        long long insideH_Red[256] = {0};
+        long long insideH_Green[256] = {0};
+        long long insideH_Blue[256] = {0};
+
+        #pragma omp for schedule(static)
+        for (int i = 0; i < pixeles; ++i) {
+            insideH_Red[imagen[i].r]++;
+            insideH_Green[imagen[i].g]++;
+            insideH_Blue[imagen[i].b]++;
+        }
+
+        #pragma omp critical
+        {
+            for (int c = 0; c < 256; ++c) {
+                H_Red[c] += insideH_Red[c];
+                H_Green[c] += insideH_Green[c];
+                H_Blue[c] += insideH_Blue[c];
+            }
+        }
+    }
+    double end = omp_get_wtime();
+    std::cout<< "\n\tTiempo con variables locales y critical = "<< (end - start)<< "s\n";
+
+    start = omp_get_wtime();
+    #pragma omp parallel for reduction(+:H_Red[:256], H_Green[:256], H_Blue[:256]) schedule(static)
+    for (int i = 0; i < pixeles; ++i) {
+        H_Red[imagen[i].r]++;
+        H_Green[imagen[i].g]++;
+        H_Blue[imagen[i].b]++;
+    }
+    end = omp_get_wtime();
+
+    std::cout<< "\tTiempo reduction = " << (end - start)<< "s\n";
+
+    // Se imprime el histograma en una tablita
+    std::cout << "\n -------------- Histograma de Colores -------------- " << std::endl;
+    std::cout << "Intensidad\tRojo (R)\tVerde (G)\tAzul (B)" << std::endl;
+
+    int intensidades[] = {0, 32, 64, 128, 192, 255};
+
+    for (int i : intensidades) {
+        if (H_Red[i]>=10000000){
+            std::cout << i << "\t\t" << H_Red[i] << "\t" << H_Green[i] << "\t" << H_Blue[i] << std::endl;
+        }
+        else{
+            std::cout << i << "\t\t" << H_Red[i] << "\t\t" << H_Green[i] << "\t\t" << H_Blue[i] << std::endl;
+        }
+        
+    }
+    std::cout << " --------------------------------------------------- \n\n" << std::endl;
+}
+
+
+
+
 int main() {
     // DOCUMENTACIÓN DE CAMBIOS (Línea Base Paralela):
     // Se añade un reporte inicial informativo para validar en la terminal con cuántos hilos se está ejecutando el programa.
+    omp_set_num_threads(4);
     std::cout << "Iniciando Línea Base Paralela (Resolucion 8K)..." << std::endl;
     #pragma omp parallel
     {
@@ -171,7 +247,7 @@ int main() {
     generarMandelbrot(imagenOriginal);
     auto endA = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> tiempoA = endA - startA;
-    std::cout << "Tarea A finalizada en: " << tiempoA.count() << " segundos." << std::endl;
+    std::cout << "Tarea A finalizada en: " << tiempoA.count() << " segundos." << std::endl<<"\n\n";
 
     // --- Ejecución Tarea B ---
     auto startB = std::chrono::high_resolution_clock::now();
@@ -180,6 +256,10 @@ int main() {
     auto endB = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> tiempoB = endB - startB;
     std::cout << "Tarea B finalizada en: " << tiempoB.count() << " segundos." << std::endl;
+
+
+    histograma(imagenFiltrada);
+
 
     // Guardar el resultado final
     std::cout << "Guardando imagen final en '" << OUTPUT_FILE << "'..." << std::endl;
