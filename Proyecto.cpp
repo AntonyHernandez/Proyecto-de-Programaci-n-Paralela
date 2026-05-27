@@ -3,6 +3,7 @@
 #include <cmath>
 #include <fstream>
 #include <chrono>
+#include <omp.h> // REQUERIDO: Cabecera para las funciones de OpenMP
 
 // Configuración de Ultra-Alta Resolución (8K UHD: 7680 x 4320)
 const int WIDTH = 7680;
@@ -15,6 +16,10 @@ struct Pixel {
 };
 
 // --- TAREA A: Generación del Conjunto de Mandelbrot ---
+// DOCUMENTACIÓN DE CAMBIOS (Línea Base Paralela):
+// Se añade la directiva `#pragma omp parallel for schedule(runtime)` en el bucle externo 'y'.
+// Se utiliza 'schedule(runtime)' para permitir la modificación dinámica del planificador (static, dynamic, guided)
+// y el tamaño del bloque (chunk size) a través de variables de entorno sin necesidad de recompilar.
 void generarMandelbrot(std::vector<Pixel>& imagen) {
     const int MAX_ITER = 500;
     
@@ -22,41 +27,68 @@ void generarMandelbrot(std::vector<Pixel>& imagen) {
     const double minX = -2.0, maxX = 0.5;
     const double minY = -1.25, maxY = 1.25;
 
-    for (int y = 0; y < HEIGHT; ++y) {
-        for (int x = 0; x < WIDTH; ++x) {
-            // Mapear los píxeles de la pantalla al plano complejo (c = cr + i*ci)
-            double cr = minX + (x * (maxX - minX) / WIDTH);
-            double ci = minY + (y * (maxY - minY) / HEIGHT);
+    const std::string OUTPUT_FILE = "mandelbrot_8k_blurred.ppm";
 
-            double zr = 0.0, zi = 0.0;
-            int iter = 0;
+    int chunks[] = {2, 4, 8};
+    const char* eval[] = {"static","dynamic","guided"};
+    omp_sched_t schedulers[] = {omp_sched_static, omp_sched_dynamic, omp_sched_guided};
 
-            // Algoritmo de escape del tiempo
-            while (zr * zr + zi * zi <= 4.0 && iter < MAX_ITER) {
-                double temp = zr * zr - zi * zi + cr;
-                zi = 2.0 * zr * zi + ci;
-                zr = temp;
-                ++iter;
+    double start = omp_get_wtime();
+
+    for (int s = 0; s < 3; s++) {
+
+        for (int c = 0; c < 3; c++) {
+
+            omp_set_schedule(schedulers[s], chunks[c]);
+
+            double start = omp_get_wtime();
+
+            #pragma omp parallel for schedule(runtime)
+            for (int y = 0; y < HEIGHT; ++y) {
+                for (int x = 0; x < WIDTH; ++x) {
+                    // Mapear los píxeles de la pantalla al plano complejo (c = cr + i*ci)
+                    double cr = minX + (x * (maxX - minX) / WIDTH);
+                    double ci = minY + (y * (maxY - minY) / HEIGHT);
+
+                    double zr = 0.0, zi = 0.0;
+                    int iter = 0;
+
+                    // Algoritmo de escape del tiempo
+                    while (zr * zr + zi * zi <= 4.0 && iter < MAX_ITER) {
+                        double temp = zr * zr - zi * zi + cr;
+                        zi = 2.0 * zr * zi + ci;
+                        zr = temp;
+                        ++iter;
+                    }
+
+                    // Coloreado básico basado en las iteraciones
+                    int idx = y * WIDTH + x;
+                    if (iter == MAX_ITER) {
+                        imagen[idx] = {0, 0, 0}; // El "cuerpo" del Mandelbrot es negro
+                    } else {
+                        // Paleta de colores psicodélica/gradual
+                        imagen[idx].r = static_cast<unsigned char>((iter * 7) % 256);
+                        imagen[idx].g = static_cast<unsigned char>((iter * 13) % 256);
+                        imagen[idx].b = static_cast<unsigned char>((iter * 23) % 256);
+                    }
+                }
             }
+            double end = omp_get_wtime();
 
-            // Coloreado básico basado en las iteraciones
-            int idx = y * WIDTH + x;
-            if (iter == MAX_ITER) {
-                imagen[idx] = {0, 0, 0}; // El "cuerpo" del Mandelbrot es negro
-            } else {
-                // Paleta de colores psicodélica/gradual
-                imagen[idx].r = static_cast<unsigned char>((iter * 7) % 256);
-                imagen[idx].g = static_cast<unsigned char>((iter * 13) % 256);
-                imagen[idx].b = static_cast<unsigned char>((iter * 23) % 256);
-            }
+            std::cout<< eval[s]<< ", chunk="<< chunks[c]<< " -> Tiempo: "<< (end - start)<< " s\n";
+
         }
     }
+
 }
 
 // --- TAREA B: Aplicación de Filtro de Convolución 2D (Desenfoque Gaussiano pesado) ---
+// DOCUMENTACIÓN DE CAMBIOS (Línea Base Paralela):
+// Se añade la directiva `#pragma omp parallel for schedule(static)` en el bucle externo 'y'.
+// Dado que cada píxel de la convolución realiza exactamente la misma cantidad de operaciones aritméticas (matriz 5x5),
+// el planificador estático por defecto distribuye el rango de filas de forma equitativa y con la menor sobrecarga de hilos posible.
 void aplicarFiltroGaussiano(const std::vector<Pixel>& origen, std::vector<Pixel>& destino) {
     // Matriz de convolución (Kernel Gaussiano 5x5)
-    // Al ser un filtro "pesado" en 8K, un kernel 5x5 secuencial ya exige bastantes operaciones.
     const int K_SIZE = 5;
     const double kernel[5][5] = {
         {1/273.0,  4/273.0,  7/273.0,  4/273.0, 1/273.0},
@@ -68,7 +100,8 @@ void aplicarFiltroGaussiano(const std::vector<Pixel>& origen, std::vector<Pixel>
     
     int offset = K_SIZE / 2;
 
-    // Convolución píxel por píxel
+    // Convolución píxel por píxel paralelizada
+    #pragma omp parallel for schedule(static)
     for (int y = 0; y < HEIGHT; ++y) {
         for (int x = 0; x < WIDTH; ++x) {
             
@@ -111,14 +144,21 @@ void guardarImagenPPM(const std::vector<Pixel>& imagen, const std::string& nombr
         std::cerr << "Error al abrir el archivo para escribir." << std::endl;
         return;
     }
-    // Cabecera PPM: P6 (color binario), ancho, alto, y valor máximo de color (255)
     archivo << "P6\n" << WIDTH << " " << HEIGHT << "\n255\n";
     archivo.write(reinterpret_cast<const char*>(imagen.data()), imagen.size() * sizeof(Pixel));
     archivo.close();
 }
 
 int main() {
-    std::cout << "Iniciando procesamiento secuencial (Resolucion 8K)..." << std::endl;
+    // DOCUMENTACIÓN DE CAMBIOS (Línea Base Paralela):
+    // Se añade un reporte inicial informativo para validar en la terminal con cuántos hilos se está ejecutando el programa.
+    std::cout << "Iniciando Línea Base Paralela (Resolucion 8K)..." << std::endl;
+    #pragma omp parallel
+    {
+        #pragma omp single
+        std::cout << "Ejecutando activamente con: " << omp_get_num_threads() << " hilos de CPU." << std::endl;
+    }
+    std::cout << "--------------------------------------------------" << std::endl;
     
     // Reserva de memoria para las imágenes (7680 * 4320 píxeles cada una)
     std::vector<Pixel> imagenOriginal(WIDTH * HEIGHT);
