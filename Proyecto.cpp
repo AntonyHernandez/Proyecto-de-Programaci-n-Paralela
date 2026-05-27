@@ -27,59 +27,36 @@ void generarMandelbrot(std::vector<Pixel>& imagen) {
     const double minX = -2.0, maxX = 0.5;
     const double minY = -1.25, maxY = 1.25;
 
-    const std::string OUTPUT_FILE = "mandelbrot_8k_blurred.ppm";
+    #pragma omp parallel for schedule(runtime)
+    for (int y = 0; y < HEIGHT; ++y) {
+        for (int x = 0; x < WIDTH; ++x) {
+            // Mapear los píxeles de la pantalla al plano complejo (c = cr + i*ci)
+            double cr = minX + (x * (maxX - minX) / WIDTH);
+            double ci = minY + (y * (maxY - minY) / HEIGHT);
 
-    int chunks[] = {2, 4, 8};
-    const char* eval[] = {"static","dynamic","guided"};
-    omp_sched_t schedulers[] = {omp_sched_static, omp_sched_dynamic, omp_sched_guided};
+            double zr = 0.0, zi = 0.0;
+            int iter = 0;
 
-    double start = omp_get_wtime();
-
-    for (int s = 0; s < 3; s++) {
-
-        for (int c = 0; c < 3; c++) {
-
-            omp_set_schedule(schedulers[s], chunks[c]);
-
-            double start = omp_get_wtime();
-
-            #pragma omp parallel for schedule(runtime)
-            for (int y = 0; y < HEIGHT; ++y) {
-                for (int x = 0; x < WIDTH; ++x) {
-                    // Mapear los píxeles de la pantalla al plano complejo (c = cr + i*ci)
-                    double cr = minX + (x * (maxX - minX) / WIDTH);
-                    double ci = minY + (y * (maxY - minY) / HEIGHT);
-
-                    double zr = 0.0, zi = 0.0;
-                    int iter = 0;
-
-                    // Algoritmo de escape del tiempo
-                    while (zr * zr + zi * zi <= 4.0 && iter < MAX_ITER) {
-                        double temp = zr * zr - zi * zi + cr;
-                        zi = 2.0 * zr * zi + ci;
-                        zr = temp;
-                        ++iter;
-                    }
-
-                    // Coloreado básico basado en las iteraciones
-                    int idx = y * WIDTH + x;
-                    if (iter == MAX_ITER) {
-                        imagen[idx] = {0, 0, 0}; // El "cuerpo" del Mandelbrot es negro
-                    } else {
-                        // Paleta de colores psicodélica/gradual
-                        imagen[idx].r = static_cast<unsigned char>((iter * 7) % 256);
-                        imagen[idx].g = static_cast<unsigned char>((iter * 13) % 256);
-                        imagen[idx].b = static_cast<unsigned char>((iter * 23) % 256);
-                    }
-                }
+            // Algoritmo de escape del tiempo
+            while (zr * zr + zi * zi <= 4.0 && iter < MAX_ITER) {
+                double temp = zr * zr - zi * zi + cr;
+                zi = 2.0 * zr * zi + ci;
+                zr = temp;
+                ++iter;
             }
-            double end = omp_get_wtime();
 
-            std::cout<< eval[s]<< ", chunk="<< chunks[c]<< " -> Tiempo: "<< (end - start)<< " s\n";
-
+            // Coloreado básico basado en las iteraciones
+            int idx = y * WIDTH + x;
+            if (iter == MAX_ITER) {
+                imagen[idx] = {0, 0, 0}; // El "cuerpo" del Mandelbrot es negro
+            } else {
+                // Paleta de colores psicodélica/gradual
+                imagen[idx].r = static_cast<unsigned char>((iter * 7) % 256);
+                imagen[idx].g = static_cast<unsigned char>((iter * 13) % 256);
+                imagen[idx].b = static_cast<unsigned char>((iter * 23) % 256);
+            }
         }
     }
-
 }
 
 // --- TAREA B: Aplicación de Filtro de Convolución 2D (Desenfoque Gaussiano pesado) ---
