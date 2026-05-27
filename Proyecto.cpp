@@ -29,7 +29,8 @@ void generarMandelbrot(std::vector<Pixel>& imagen) {
 
     const std::string OUTPUT_FILE = "mandelbrot_8k_blurred.ppm";
 
-    int chunks[] = {2, 4, 8};
+    int cores = omp_get_num_procs();
+    int limite = cores * 2;
     const char* eval[] = {"static","dynamic","guided"};
     omp_sched_t schedulers[] = {omp_sched_static, omp_sched_dynamic, omp_sched_guided};
 
@@ -37,9 +38,9 @@ void generarMandelbrot(std::vector<Pixel>& imagen) {
 
     for (int s = 0; s < 3; s++) {
 
-        for (int c = 0; c < 3; c++) {
+        for (int chunks = 1; chunks <= limite; chunks=chunks*2) {
 
-            omp_set_schedule(schedulers[s], chunks[c]);
+            omp_set_schedule(schedulers[s], chunks);
 
             double start = omp_get_wtime();
 
@@ -75,7 +76,7 @@ void generarMandelbrot(std::vector<Pixel>& imagen) {
             }
             double end = omp_get_wtime();
 
-            std::cout<< eval[s]<< ", chunk="<< chunks[c]<< " -> Tiempo: "<< (end - start)<< " s\n";
+            std::cout<< eval[s]<< ", chunk="<< chunks << " -> Tiempo: "<< (end - start)<< " s\n";
 
         }
     }
