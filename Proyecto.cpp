@@ -23,7 +23,7 @@ struct Pixel {
 // Se utiliza 'schedule(runtime)' para permitir la modificación dinámica del planificador (static, dynamic, guided)
 // y el tamaño del bloque (chunk size) a través de variables de entorno sin necesidad de recompilar.
 
-void generarMandelbrot(std::vector<Pixel>& imagen) {
+void generarMandelbrot(std::vector<Pixel>& imagen, bool analizar) {
     const int MAX_ITER = 500;
     
     // Límites del plano complejo para encuadrar el fractal
@@ -32,11 +32,16 @@ void generarMandelbrot(std::vector<Pixel>& imagen) {
 
     const std::string OUTPUT_FILE = "mandelbrot_8k_blurred.ppm";
 
-    int cores = omp_get_num_procs();
-    int limite = 2;
-    const char* eval[] = {"static"};
-    //int limite = cores * 2;
-    //const char* eval[] = {"static","dynamic","guided"};
+    const char* eval[] = {"static","dynamic","guided"};
+    int limite = 16;
+    int max=3;
+
+    if (!analizar){
+        limite = 4;
+        max=1;
+    }
+    
+
     omp_sched_t schedulers[] = {omp_sched_static, omp_sched_dynamic, omp_sched_guided};
 
     std::vector<int> historial(MAX_ITER + 1, 0);
@@ -45,7 +50,7 @@ void generarMandelbrot(std::vector<Pixel>& imagen) {
     double start = omp_get_wtime();
 
     // Parte No.3 Balanceo de Carga (Schedulers):
-    for (int s = 0; s < 1; s++) {
+    for (int s = 0; s < max; s++) {
 
         for (int chunks = 1; chunks <= limite; chunks=chunks*2) {
 
@@ -245,10 +250,9 @@ void histograma(const std::vector<Pixel>& imagen) {
     std::cout << " --------------------------------------------------- \n\n" << std::endl;
 }
 
-
 int main() {
 
-    omp_set_num_threads(2);
+    omp_set_num_threads(4);
     std::cout << "Iniciando Línea Base Paralela (Resolucion 8K)..." << std::endl;
     #pragma omp parallel
     {
@@ -265,7 +269,7 @@ int main() {
     auto startA = std::chrono::high_resolution_clock::now();
     std::cout << "Ejecutando Tarea A: Generando Mandelbrot..." << std::endl;
 
-    generarMandelbrot(imagenOriginal);
+    generarMandelbrot(imagenOriginal,true);
 
     auto endA = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> tiempoA = endA - startA;
