@@ -3,7 +3,7 @@
 #include <cmath>
 #include <fstream>
 #include <chrono>
-#include <omp.h> // REQUERIDO: Cabecera para las funciones de OpenMP
+#include <omp.h> 
 #include <vector>
 #include <mutex>
 
@@ -22,6 +22,7 @@ struct Pixel {
 // Se añade la directiva `#pragma omp parallel for schedule(runtime)` en el bucle externo 'y'.
 // Se utiliza 'schedule(runtime)' para permitir la modificación dinámica del planificador (static, dynamic, guided)
 // y el tamaño del bloque (chunk size) a través de variables de entorno sin necesidad de recompilar.
+
 void generarMandelbrot(std::vector<Pixel>& imagen) {
     const int MAX_ITER = 500;
     
@@ -43,6 +44,7 @@ void generarMandelbrot(std::vector<Pixel>& imagen) {
 
     double start = omp_get_wtime();
 
+    // Parte No.3 Balanceo de Carga (Schedulers):
     for (int s = 0; s < 1; s++) {
 
         for (int chunks = 1; chunks <= limite; chunks=chunks*2) {
@@ -95,6 +97,7 @@ void generarMandelbrot(std::vector<Pixel>& imagen) {
 // Se añade la directiva `#pragma omp parallel for schedule(static)` en el bucle externo 'y'.
 // Dado que cada píxel de la convolución realiza exactamente la misma cantidad de operaciones aritméticas (matriz 5x5),
 // el planificador estático por defecto distribuye el rango de filas de forma equitativa y con la menor sobrecarga de hilos posible.
+
 void aplicarFiltroGaussiano(const std::vector<Pixel>& origen, std::vector<Pixel>& destino) {
     // Matriz de convolución (Kernel Gaussiano 5x5)
     const int K_SIZE = 5;
@@ -108,39 +111,59 @@ void aplicarFiltroGaussiano(const std::vector<Pixel>& origen, std::vector<Pixel>
     
     int offset = K_SIZE / 2;
 
+   
     // Convolución píxel por píxel paralelizada
-    #pragma omp parallel for schedule(static)
-    for (int y = 0; y < HEIGHT; ++y) {
-        for (int x = 0; x < WIDTH; ++x) {
-            
+    #pragma omp parallel
+    {
+        
+        int id = omp_get_thread_num();
+        int n = omp_get_num_threads();
+
+        //Parte No.5 SPMD y Afinidad:
+        //Para implementar el SPMD se repartio las filas entre los diferentes nucleos
+        for (int y = id; y < HEIGHT; y += n) {
+
             // Caso de bordes: mantener el píxel original para simplificar
-            if (x < offset || x >= WIDTH - offset || y < offset || y >= HEIGHT - offset) {
-                destino[y * WIDTH + x] = origen[y * WIDTH + x];
-                continue;
-            }
-
-            double sumR = 0.0, sumG = 0.0, sumB = 0.0;
-
-            // Operación de vecindad (Kernel)
-            for (int ky = 0; ky < K_SIZE; ++ky) {
-                for (int kx = 0; kx < K_SIZE; ++kx) {
-                    int pixelX = x + kx - offset;
-                    int pixelY = y + ky - offset;
-                    
-                    const Pixel& p = origen[pixelY * WIDTH + pixelX];
-                    double peso = kernel[ky][kx];
-
-                    sumR += p.r * peso;
-                    sumG += p.g * peso;
-                    sumB += p.b * peso;
+            if (y < offset || y >= HEIGHT - offset) {
+                for (int x = 0; x < WIDTH; ++x) {
+                    destino[y * WIDTH + x] = origen[y * WIDTH + x];
                 }
+                continue; 
             }
 
-            // Guardar resultado con cast seguro
-            int destIdx = y * WIDTH + x;
-            destino[destIdx].r = static_cast<unsigned char>(sumR);
-            destino[destIdx].g = static_cast<unsigned char>(sumG);
-            destino[destIdx].b = static_cast<unsigned char>(sumB);
+            for (int x = 0; x < WIDTH; ++x) {
+                
+                if (x < offset || x >= WIDTH - offset) {
+                    destino[y * WIDTH + x] = origen[y * WIDTH + x];
+                    continue;
+                }
+
+                double sumR = 0.0, sumG = 0.0, sumB = 0.0;
+
+                // Operación de vecindad (Kernel)
+                for (int ky = 0; ky < K_SIZE; ++ky) {
+                    int pixelY = y + ky - offset;
+                    const int rowOffset = pixelY * WIDTH;
+
+                    // Basicamente, para lograr Forzar la vectorizaciòn se implementò SIMD en el nucle màs interno 
+                    #pragma omp simd reduction(+:sumR, sumG, sumB)
+                    for (int kx = 0; kx < K_SIZE; ++kx) {
+                        int pixelX = x + kx - offset;
+                        const Pixel& p = origen[rowOffset + pixelX];
+                        double peso = kernel[ky][kx];
+
+                        sumR += p.r * peso;
+                        sumG += p.g * peso;
+                        sumB += p.b * peso;
+                    }
+                }
+
+                // Guardar resultado con cast seguro
+                int destIdx = y * WIDTH + x;
+                destino[destIdx].r = static_cast<unsigned char>(sumR);
+                destino[destIdx].g = static_cast<unsigned char>(sumG);
+                destino[destIdx].b = static_cast<unsigned char>(sumB);
+            }
         }
     }
 }
@@ -223,12 +246,9 @@ void histograma(const std::vector<Pixel>& imagen) {
 }
 
 
-
-
 int main() {
-    // DOCUMENTACIÓN DE CAMBIOS (Línea Base Paralela):
-    // Se añade un reporte inicial informativo para validar en la terminal con cuántos hilos se está ejecutando el programa.
-    omp_set_num_threads(4);
+
+    omp_set_num_threads(2);
     std::cout << "Iniciando Línea Base Paralela (Resolucion 8K)..." << std::endl;
     #pragma omp parallel
     {
@@ -237,34 +257,36 @@ int main() {
     }
     std::cout << "--------------------------------------------------" << std::endl;
     
-    // Reserva de memoria para las imágenes (7680 * 4320 píxeles cada una)
+    // Imágenes (7680 * 4320 píxeles cada una)
     std::vector<Pixel> imagenOriginal(WIDTH * HEIGHT);
     std::vector<Pixel> imagenFiltrada(WIDTH * HEIGHT);
 
-    // --- Ejecución Tarea A ---
+    // --- Tarea A ---
     auto startA = std::chrono::high_resolution_clock::now();
     std::cout << "Ejecutando Tarea A: Generando Mandelbrot..." << std::endl;
+
     generarMandelbrot(imagenOriginal);
+
     auto endA = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> tiempoA = endA - startA;
     std::cout << "Tarea A finalizada en: " << tiempoA.count() << " segundos." << std::endl<<"\n\n";
 
-    // --- Ejecución Tarea B ---
+    // --- Tarea B ---
     auto startB = std::chrono::high_resolution_clock::now();
     std::cout << "Ejecutando Tarea B: Aplicando Filtro Gaussiano 5x5..." << std::endl;
+
     aplicarFiltroGaussiano(imagenOriginal, imagenFiltrada);
+
     auto endB = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> tiempoB = endB - startB;
     std::cout << "Tarea B finalizada en: " << tiempoB.count() << " segundos." << std::endl;
 
-
+    // Parte No.4 Histograma De colores
     histograma(imagenFiltrada);
-
 
     // Guardar el resultado final
     std::cout << "Guardando imagen final en '" << OUTPUT_FILE << "'..." << std::endl;
     guardarImagenPPM(imagenFiltrada, OUTPUT_FILE);
     
-    std::cout << "Proceso completado con exito." << std::endl;
     return 0;
 }
